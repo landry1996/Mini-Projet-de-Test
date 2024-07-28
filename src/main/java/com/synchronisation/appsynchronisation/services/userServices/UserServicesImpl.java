@@ -8,8 +8,12 @@ import com.synchronisation.appsynchronisation.mapper.IUserMapper;
 import com.synchronisation.appsynchronisation.models.Note;
 import com.synchronisation.appsynchronisation.models.USR;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.List;
@@ -79,35 +83,46 @@ public class UserServicesImpl implements UserServices {
     @Override
     @Scheduled(fixedDelay = 60000)
     public void synchronizeUsers() {
-        // Synchronize local users with remote server
-        List<USR> remoteUsers = restTemplate.getForObject(remoteServerUrl, List.class, USR.class);
-
-        for (USR remoteUser : remoteUsers) {
-            USR localUser = userRepository.findById(remoteUser.getId()).orElse(null);
-            if (localUser == null) {
-
-                // Create new user locally if it doesn't exist
-                userRepository.save(remoteUser);
+        try {
+            // Synchronize local users with remote server
+            ResponseEntity<List<USR>> response = restTemplate.exchange(remoteServerUrl, HttpMethod.GET, null, new ParameterizedTypeReference<List<USR>>() {});
+            if (response.getStatusCode().is2xxSuccessful()) {
+                List<USR> remoteUsers = response.getBody();
+                if (remoteUsers != null) {
+                    for (USR remoteUser : remoteUsers) {
+                        USR localUser = userRepository.findById(remoteUser.getId()).orElse(null);
+                        if (localUser == null) {
+                            // Create new user locally if it doesn't exist
+                            userRepository.save(remoteUser);
+                        } else {
+                            // Update local user with data from remote server
+                            localUser.setUsername(remoteUser.getUsername());
+                            localUser.setEmail(remoteUser.getEmail());
+                            localUser.setPassword(remoteUser.getPassword());
+                            localUser.setListeNote(remoteUser.getListeNote());
+                            userRepository.save(localUser);
+                        }
+                    }
+                }
             } else {
-                // Update local user with data from remote server
-                localUser.setUsername(remoteUser.getUsername());
-                localUser.setEmail(remoteUser.getEmail());
-                localUser.setPassword(remoteUser.getPassword());
-                localUser.setListeNote(remoteUser.getListeNote());
-                userRepository.save(localUser);
+                System.err.println("Échec de la récupération des utilisateurs à distance: " + response.getStatusCode());
             }
+        } catch (RestClientException e) {
+            System.err.println("Une erreur s'est produite lors de la récupération des utilisateurs à distance " + e.getMessage());
         }
 
-        // Synchronize remote users with local data
-        List<USR> localUsers = userRepository.findAll();
-        for (USR localUser : localUsers) {
-            USR remoteUser = new USR(localUser.getId(), localUser.getUsername(), localUser.getEmail(),
-                    localUser.getPassword(), localUser.getListeNote());
+        try {
+            // Synchronize remote users with local data
+            List<USR> localUsers = userRepository.findAll();
+            for (USR localUser : localUsers) {
+                USR remoteUser = new USR(localUser.getId(), localUser.getUsername(), localUser.getEmail(),
+                        localUser.getPassword(), localUser.getListeNote());
 
-            // Send updates to remote server
-
-            restTemplate.put(remoteServerUrl + "/" + localUser.getId(), localUser);
-
+                // Send updates to remote server
+                restTemplate.put(remoteServerUrl + "/" + localUser.getId(), localUser);
+            }
+        } catch (RestClientException e) {
+            System.err.println("Erreur survenue lors de la mise à jour des utilisateurs distants: " + e.getMessage());
         }
     }
 
